@@ -9,4 +9,9 @@ selection:
   pt_min: 5.0
   eta_max: 2.5
 
+hist:
+  nbins: 60
+  min: 80
+  max: 250
+
 output_dir: "outputs"

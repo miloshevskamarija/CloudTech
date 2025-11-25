@@ -9,3 +9,4 @@ dask[distributed]
 pyyaml
 pytest
 jupyterlab
+vector

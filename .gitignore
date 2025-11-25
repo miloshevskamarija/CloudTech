@@ -1,0 +1,44 @@
+cd ~/CloudTech
+
+cat << 'EOF' > .gitignore
+# Python env & builds
+env/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.build/
+dist/
+.eggs/
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.tox/
+.coverage
+htmlcov/
+
+# Jupyter 
+.ipynb_checkpoints/
+
+# Data (ATLAS Open Data ROOT files etc.) 
+data/raw/
+data/processed/
+
+# Generated outputs
+outputs/
+logs/
+
+# Editor / OS files 
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Docker
+*.log
+EOF
