@@ -1,0 +1,11 @@
+uproot
+awkward
+numpy
+pandas
+matplotlib
+hist
+boost-histogram
+dask[distributed]
+pyyaml
+pytest
+jupyterlab
