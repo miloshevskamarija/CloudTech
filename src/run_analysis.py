@@ -1,25 +1,36 @@
 """
-Main entry point for the distributed H->ZZ->4l analysis.
+Main entry point for a simple H->ZZ->4l-style analysis on the ATLAS
+Open Data mini-ntuples.
+
+This script:
+  * Reads all *.4lep.root files listed in config/config.yaml
+  * Applies basic lepton kinematic cuts
+  * Requires at least 4 leptons per event
+  * Builds lepton four-vectors and reconstructs a 4-lepton invariant mass
+    for each event (using the four highest-pT leptons)
+  * Fills and saves a 1D histogram of m4l to outputs/m4l_counts.npy,
+    outputs/m4l_edges.npy, and outputs/m4l.png
 """
 
 import argparse
 import glob
 import os
 import yaml
+import awkward as ak
+import numpy as np
+import vector
+import matplotlib.pyplot as plt
 from hist import Hist
 import hist
-import vector
-import numpy as np
-import awkward as ak
-
-from dask import delayed, compute
 
 from src.analysis.io import load_events
-from src.analysis.physics import build_four_vector, invariant_mass
-from src.analysis.selection import basic_lepton_selection, four_lepton_event_selection
-from src.distributed.executor import create_local_client
+from src.analysis.selection import (
+    basic_lepton_selection,
+    four_lepton_event_selection,
+)
 
 
+# Argument parsing and config loading
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Distributed ATLAS H->ZZ->4l analysis with Dask."
@@ -37,30 +48,24 @@ def load_config(path):
         return yaml.safe_load(f)
 
 
+# Per-file analysis
 def process_file(filename, config):
     """
-    Per-file H->ZZ->4l analysis.
-
-    Steps:
-    - Read ROOT file
-    - Apply basic lepton selection
-    - Select 4-lepton events
-    - Build four-vectors
-    - Compute m4l
-    - Fill and return a partial histogram
+    Vectorised H→ZZ→4ℓ-like analysis.
+    Uses awkward broadcasting + vector Lorentz sums
     """
 
-    # 1) Load events from the ROOT file
+    # Load leptons
     arrays = load_events(filename)
 
-    # 2) Basic lepton selection (pT and |eta|)
+    # Basic selection
     arrays = basic_lepton_selection(
         arrays,
         pt_min=config["selection"]["pt_min"],
         eta_max=config["selection"]["eta_max"],
     )
 
-    # 3) Require exactly four leptons per event (simple placeholder)
+    # Require >= 4 leptons
     arrays = four_lepton_event_selection(arrays)
 
     # If no events pass, return an empty histogram
@@ -69,33 +74,43 @@ def process_file(filename, config):
     hmax = config["hist"]["max"]
 
     m4l_axis = hist.axis.Regular(
-        nbins, hmin, hmax, name="m4l", label=r"$m_{4\ell}\,\mathrm{[GeV]}$"
+        nbins, hmin, hmax, name="m4l", label=r"$m_{4\ell}\,[GeV]$"
     )
     h = Hist(m4l_axis)
 
     if len(arrays) == 0:
         return h, {"filename": filename, "n_events": 0}
 
-    # 4) Build four-vectors using the vector library
-    vecs = vector.Array(
-    ak.zip(
-        {
-            "pt": arrays["lep_pt"],
-            "eta": arrays["lep_eta"],
-            "phi": arrays["lep_phi"],
-            "E": arrays["lep_E"],
-        }
+    # Build lorentz vectors
+    leptons = vector.Array(
+        ak.zip(
+            {
+                "pt": arrays["lep_pt"],
+                "eta": arrays["lep_eta"],
+                "phi": arrays["lep_phi"],
+                "E":   arrays["lep_E"],
+            }
+        )
     )
-)
 
-    # 5) Sum the four-vectors to get the Higgs candidate per event
-    higgs_vec = ak.sum(vecs, axis=1)
-    m4l = higgs_vec.mass
+    # Sort leptons per event by pT descending
+    idx = ak.argsort(leptons.pt, axis=1, ascending=False)
 
-    # 6) Fill the histogram (weight=1 for now)
-    h.fill(m4l)
+    # Reorder leptons
+    leptons_sorted = leptons[idx]
 
-    # Return the partial histogram and some metadata
+    # Take the first 4 leptons per event
+    top4 = leptons_sorted[:, :4]        # shape: (events, 4)
+
+    # Vectorized 4-vector sum: sum over axis=1
+    higgs = ak.sum(top4, axis=1)
+
+    # Convert MeV → GeV
+    m4l = higgs.mass / 1000.0
+
+    # Fill histogram
+    h.fill(m4l.to_numpy())
+
     return h, {"filename": filename, "n_events": len(arrays)}
 
 
@@ -110,21 +125,51 @@ def main():
     if not files:
         raise RuntimeError(f"No input files found for pattern {pattern}")
 
-    # Start local Dask client (later we can add remote/scheduler support)
-    client = create_local_client(
-        n_workers=config["dask"]["n_workers"],
-        threads_per_worker=config["dask"]["threads_per_worker"],
-    )
+    print(f"Found {len(files)} input files.")
 
-    # Build delayed tasks
-    tasks = [delayed(process_file)(filename, config) for filename in files]
+    results = []
+    for i, fname in enumerate(files, start=1):
+        print(f"[{i}/{len(files)}] Processing {fname} ...")
+        h, info = process_file(fname, config)
+        results.append((h, info))
 
-    results = compute(*tasks)
+    # Separate histograms and metadata
+    hists, infos = zip(*results)
 
-    client.close()
+    # Filter out any histograms that are not Hist instances (just in case)
+    hists = [h for h in hists if isinstance(h, Hist)]
 
-    # TODO: reduce histograms and write outputs
-    print(f"Processed {len(results)} files.")
+    if not hists:
+        raise RuntimeError("No histograms were produced!")
+
+    # Merge histograms by adding them bin-by-bin
+    total_hist = hists[0].copy()
+    for h in hists[1:]:
+        total_hist += h
+
+    # Ensure output directory exists
+    outdir = config["output_dir"]
+    os.makedirs(outdir, exist_ok=True)
+
+    # Save histogram contents: bin counts and edges
+    counts = total_hist.values()
+    edges = total_hist.axes[0].edges
+
+    np.save(os.path.join(outdir, "m4l_counts.npy"), counts)
+    np.save(os.path.join(outdir, "m4l_edges.npy"), edges)
+
+    # Plot
+    fig, ax = plt.subplots()
+    ax.step(edges[:-1], counts, where="post")
+    ax.set_xlabel(r"$m_{4\ell}\,\mathrm{[GeV]}$")
+    ax.set_ylabel("Events")
+    ax.set_title("Four-lepton invariant mass")
+    fig.tight_layout()
+    fig.savefig(os.path.join(outdir, "m4l.png"))
+    plt.close(fig)
+
+    print(f"Processed {len(files)} files.")
+    print(f"Saved histogram arrsays and plot to: {outdir}")
 
 
 if __name__ == "__main__":

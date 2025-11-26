@@ -10,8 +10,8 @@ selection:
   eta_max: 2.5
 
 hist:
-  nbins: 60
-  min: 80
-  max: 250
+  nbins: 150
+  min: 0
+  max: 800
 
 output_dir: "outputs"

@@ -12,6 +12,10 @@ DEFAULT_BRANCHES = [
     "lep_phi",
     "lep_E",
     "lep_charge",
+    "lep_type",
+    "jet_n",
+    "runNumber",
+    "eventNumber",
 ]
 
 
@@ -22,7 +26,7 @@ def _find_tree(file):
     Logic:
     1. If 'mini' exists, use it.
     2. Otherwise, search for exactly one TTree.
-    3. Otherwise, search for a TTree inside subdirectories.
+    3. Otherwise, search for a TTree inside subkeydirectories.
     """
     # Direct match
     if "mini" in file.keys():
@@ -41,38 +45,26 @@ def _find_tree(file):
     for key in file.keys():
         try:
             object = file[key]
-            subkeys = object.keys()
-            for subkey in subkeys:
-                if file[f"{key}/{subkey}"].classname == "TTree":
-                    return file[f"{key}/{subkey}"]
+            for subkey in object.keys():
+                full = f"{key}/{subkey}"
+                if file[full].classname == "TTree":
+                    return file[full]
         except Exception:
             continue
 
-    raise RuntimeError(f"Could not find a TTree in file {file.file_path}. "
-                       f"Available keys: {file.keys()}")
+    raise RuntimeError(f"No TTree found in file {file.file_path}")
 
 
 def load_events(filename, branches=None):
     """
-    Load selected branches from a ROOT file into an Awkward Array.
+    Load selected branches into an Awkward Array.
     Automatically detects the correct TTree name.
-
-    Parameters
-    ----------
-    filename : str
-        Path to the ROOT file.
-    branches : list of str or None
-        Branches to read.
-
-    Returns
-    -------
-    ak.Array
-        Awkward array with the requested branches.
     """
     if branches is None:
         branches = DEFAULT_BRANCHES
 
-    f = uproot.open(filename)
-    tree = _find_tree(f)
+    with uproot.open(filename) as f:
+        tree = _find_tree(f)
+        arrays = tree.arrays(branches, library="ak")
 
-    return tree.arrays(branches, library="ak")
+    return arrays
