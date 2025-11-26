@@ -29,7 +29,7 @@ data/raw/
 data/processed/
 
 # Generated outputs
-outputs/
+*.npy
 logs/
 
 # Editor / OS files 
