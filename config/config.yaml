@@ -10,8 +10,11 @@ selection:
   eta_max: 2.5
 
 hist:
-  nbins: 150
-  min: 0
-  max: 800
+  nbins: 110
+  min: 50    # GeV
+  max: 800   # GeV
 
 output_dir: "outputs"
+
+parallel: true
+n_workers: 4
