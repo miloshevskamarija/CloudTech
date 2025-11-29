@@ -2,7 +2,7 @@ data_dir: "data/raw"
 file_pattern: "*.4lep.root"
 
 dask:
-  n_workers: 2
+  n_workers: 4
   threads_per_worker: 1
 
 selection:

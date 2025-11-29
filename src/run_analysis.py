@@ -10,6 +10,7 @@ import argparse
 import glob
 import os
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import yaml
 import awkward as ak
@@ -29,12 +30,18 @@ from src.analysis.selection import (
 # Argument parsing and config loading
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Distributed ATLAS H->ZZ->4l analysis with Dask."
+        description="Parallel ATLAS H->ZZ->4l analysis using multiple worker processes."
     )
     parser.add_argument(
         "--config",
         default="config/config.yaml",
         help="Path to YAML configuration file.",
+    )
+    parser.add_argument(
+        "--n-workers",
+        type=int,
+        default=1,
+        help="Number of worker processes for parallel file processing.",
     )
     return parser.parse_args()
 
@@ -82,7 +89,7 @@ def process_file(filename, config):
     h_m4l = Hist(m4l_axis)
 
     if len(arrays) == 0:
-        info = {
+        return h_m4l,  {
             "filename": filename,
             "n_events": 0,
             "leading_pt_GeV": np.array([], dtype=float),
@@ -91,7 +98,6 @@ def process_file(filename, config):
             "m34_GeV": np.array([], dtype=float),
             "dR_lep01": np.array([], dtype=float),
         }
-        return h_m4l, info
 
     # 4) Build lepton four-vectors (still in MeV)
     leptons = vector.Array(
@@ -109,9 +115,20 @@ def process_file(filename, config):
     idx = ak.argsort(leptons.pt, axis=1, ascending=False)
     leptons_sorted = leptons[idx]
     leptons4 = leptons_sorted[:, :4]
+    
+    # handle files with zero 4-lepton events
+    if len(leptons4) == 0:
+        return h_m4l, {
+        "filename": filename,
+        "n_events": 0,
+        "leading_pt_GeV": np.array([], dtype=float),
+        "eta": np.array([], dtype=float),
+        "m12_gev": np.array([], dtype=float),
+        "m34_gev": np.array([], dtype=float),
+        "dR_lep01": np.array([], dtype=float),
+    }
 
     # 6) Sum the four leading leptons to form Higgs candidates
-    #    (Awkward reduction over the event axis)
     higgs = ak.sum(leptons4, axis=1)  # still MeV
     m4l = higgs.mass / 1000.0      # convert to GeV
 
@@ -175,13 +192,26 @@ def main():
     results = []
     total_events = 0
 
-    for i, fname in enumerate(files, start=1):
-        print(f"[{i}/{len(files)}] Processing {fname} ...")
-        out = safe_process_file(fname, config)
-        if out is not None:
-            h, info = out
-            results.append(out)
-            total_events += info.get("n_events", 0)
+    n_workers = config.get("n_workers", args.n_workers)
+    print(f"Using {n_workers} worker processes.")
+
+    with ProcessPoolExecutor(max_workers=n_workers) as pool:
+        future_to_file = {
+            pool.submit(safe_process_file, fname, config): fname
+            for fname in files
+        }
+        for i, future in enumerate(as_completed(future_to_file), start=1):
+            fname = future_to_file[future]
+            try:
+                out = future.result()
+            except Exception as e:
+                print(f"[ERROR] {fname}: {e}")
+                continue
+            if out is not None:
+                h, info = out
+                results.append((h, info))
+                total_events += info.get("n_events", 0)
+            print(f"[{i}/{len(files)}] Completed {fname}")
 
     end_time = time.perf_counter()
     wall_time = end_time - start_time
@@ -371,7 +401,7 @@ def main():
         plt.close(fig)
 
     # m12 and m34 1D distributions
-    if m12_all.size > 0:
+    if m12_all.size > 0 and m34_all.size > 0:
         m_bins = np.linspace(50.0, 150.0, 51)
 
         m12_counts, m12_edges = np.histogram(m12_all, bins=m_bins)
