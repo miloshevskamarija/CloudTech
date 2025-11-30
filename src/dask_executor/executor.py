@@ -5,7 +5,7 @@ This module hides the details of starting a local Dask cluster
 and submitting per-file analysis tasks.
 """
 
-from dask.distributed import Client, LocalCluster
+from distributed import Client, LocalCluster
 from dask import delayed
 
 
