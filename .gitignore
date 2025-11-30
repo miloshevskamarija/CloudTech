@@ -1,6 +1,3 @@
-cd ~/CloudTech
-
-cat << 'EOF' > .gitignore
 # Python env & builds
 env/
 .venv/
@@ -25,12 +22,10 @@ htmlcov/
 .ipynb_checkpoints/
 
 # Data (ATLAS Open Data ROOT files etc.) 
-data/raw/
-data/processed/
+data
 
 # Generated outputs
 *.npy
-logs/
 
 # Editor / OS files 
 .vscode/
@@ -41,4 +36,3 @@ Thumbs.db
 
 # Docker
 *.log
-EOF
