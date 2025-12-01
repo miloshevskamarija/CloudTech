@@ -40,9 +40,9 @@ The project has been tested on Linux and on Windows using **WSL2**. You will nee
    pip install -r requirements.txt
    ```
 
-4. **Build the Docker image**
+4. **Build the Docker image (optional)**
 
-   A `Dockerfile` is provided that installs all required system packages (ROOT, uproot, pandas, Dask, etc.) and copies the analysis scripts into the image. Build the image using:
+   A `Dockerfile` is provided that installs all required system packages (build tools, etc.) and copies the analysis scripts into the image. Build the image using:
 
    ```bash
    docker build -t cloudtech:latest .
@@ -120,7 +120,7 @@ python -m src.run_analysis --config config/config.yaml --n-workers 1
 
 Alternatively, you can set `n_workers: 1` inside `config/config.yaml` and omit the `--n-workers` flag.
 
-### B. Parallel / “distributed” mode (multi-core)
+### B. Parallel / “distributed” mode (multi-core, ProcessPoolExecutor)
 
 To process input files in parallel using Python’s `ProcessPoolExecutor`:
 
@@ -139,48 +139,90 @@ Notes:
 
 - Each worker processes a different subset of the ROOT files, so the scaling behaviour is straightforward to test (e.g. N = 1, 2, 4, 8).
 
-### C. Dask-based distributed execution
+### C. Distributed execution with Dask
 
-The module `src/distributed/executor.py` contains helpers for running the same per-file analysis using Dask Distributed. This allows you to extend from local multi-processing to a Dask cluster (e.g. across multiple nodes) without changing the core analysis logic. For a true multi-node cluster, you can point the Dask client at a remote scheduler instead of creating a local cluster, keeping the same per-file processing function and configuration.
+If you want to run the same per-file analysis using Dask Distributed instead of the built-in process pool, use the helper utilities under `src/distributed/`.
 
-## Viewing logs and progress
+A minimal example (Python shell or notebook):
 
-The analysis prints progress and a final summary to standard output, including:
+```python
+from glob import glob
+from src.run_analysis import process_file, load_config
+from src.distributed.executor import create_local_client, build_tasks
 
-- Number of files processed.
-- Number of selected events.
-- Mean and RMS of the `m4l` distribution.
-- Event yields in Z and Higgs mass windows.
-- Total wall time and approximate processing rate in events/s.
-- Location of the output directory.
+config = load_config("config/config.yaml")
+files = sorted(glob("data/raw/*.root"))
 
-To keep a log for later analysis, you can run:
+# Start a local Dask cluster
+client = create_local_client(n_workers=4, threads_per_worker=1)
 
-```bash
-mkdir -p logs
-python -m src.run_analysis --config config/config.yaml --n-workers 4   2>&1 | tee logs/run_$(date +%Y%m%d_%H%M%S).log
+# Create one delayed task per input file
+tasks = build_tasks(files, process_file, config)
+
+# Execute on the Dask cluster
+results = client.gather(tasks)
 ```
 
-## Outputs
+- `create_local_client` starts a local Dask `Client` using multiple workers on your machine.
+- For a real cluster, point `Client` at a remote scheduler instead of using `create_local_client`, keeping the same `process_file` and `config`.
 
-By default, outputs are written to `outputs/` (or the directory given by `output_dir` in `config/config.yaml`).
+This lets you re-use the exact same per-file logic as the serial/ProcessPool case, but with the scheduling handled by Dask.
 
-Typical artefacts include:
+## Running with Docker
 
-- **Plots (PNG):**
-  - `outputs/m4l.png` – full `m4l` spectrum.
-  - `outputs/m4l_zoom.png` – zoom around the Z and Higgs mass region.
-  - `outputs/m4l_log.png` – `m4l` with a logarithmic y-axis.
-  - `outputs/m12.png`, `outputs/m34.png` – dilepton invariant masses.
-  - `outputs/m12_m34_2D.png` – 2D histogram of the two Z candidates.
-  - `outputs/leading_pt.png`, `outputs/lepton_eta.png`, `outputs/deltaR_leading_leptons.png`, etc.
-- **NumPy arrays:**
-  - `outputs/m4l_edges.npy`
-  - `outputs/m4l_counts.npy`
+This repository includes a `Dockerfile` configured to run the analysis in a self-contained container based on `python:3.12-slim`.
 
-These let you re-plot the `m4l` distribution or combine results from different runs without reprocessing the ROOT files.
+The Dockerfile:
 
-You can change the output directory by editing `output_dir` in `config/config.yaml`.
+- Installs basic build tools (`build-essential`, `gcc`).
+- Installs all Python dependencies from `requirements.txt`.
+- Copies `src/` and `config/` into `/app` inside the container.
+- Sets `WORKDIR` to `/app`.
+- Uses the default command:
+
+  ```bash
+  python -m src.run_analysis --config config/config.yaml
+  ```
+
+### 1. Build the Docker image
+
+From the project root (where the `Dockerfile` lives):
+
+```bash
+docker build -t cloudtech:latest .
+```
+
+### 2. Prepare data and outputs on the host
+
+On your host (or inside WSL in the project folder), make sure the data and output directories exist:
+
+```bash
+mkdir -p data/raw
+mkdir -p outputs
+```
+
+Copy or unzip the ATLAS `4lep` ROOT files into `data/raw` as described in the _Data download_ section. The container will see these via a bind mount.
+
+### 3. Run the analysis in Docker (default command)
+
+The Dockerfile’s default `CMD` already runs the main analysis script with the standard configuration. To run it and mount your data and outputs:
+
+```bash
+docker run --rm   -v "$PWD/data:/app/data"   -v "$PWD/outputs:/app/outputs"   cloudtech:latest
+```
+
+- `/app/data` inside the container is your `data/` directory on the host.
+- `/app/outputs` inside the container is your `outputs/` directory on the host (plots and NumPy arrays will appear there).
+
+### 4. Run with explicit options (override the default command)
+
+If you want to explicitly choose the number of workers or a different config file, you can override the default `CMD` by passing a command after the image name:
+
+```bash
+docker run --rm   -v "$PWD/data:/app/data"   -v "$PWD/outputs:/app/outputs"   cloudtech:latest   python -m src.run_analysis --config config/config.yaml --n-workers 4
+```
+
+This uses the same image, but replaces the default command with the one given at the end.
 
 ## Running the test suite
 
